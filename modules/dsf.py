@@ -1,15 +1,18 @@
+from modules.permutation_alignment import permutation_alignment7
 from modules.losses import (
     LehmerMeanDSFLoss,
+    PowerMeanDSFLoss,
     phase_invariant_cosine_squared_distance,
 )
-from typing import Callable, Union
-from modules.utils import nextpow2
+from typing import Union
+from modules.utils import complex_abs, nextpow2
 import tensorflow as tf
 import tensorflow.keras as tfk
 import tensorflow.keras.layers as tfkl
 import kapre
 import numpy as np
 from tqdm import tqdm
+from modules.permutation_alignment import permutation_alignment7 as palign
 
 
 class DirectionalSparseFiltering(tfk.Model):
@@ -24,6 +27,8 @@ class DirectionalSparseFiltering(tfk.Model):
         waveform_data_format: str = "channels_last",
         precision: int = 64,
         eps: float = 1e-12,
+        inline_decoupling: bool = True,
+        wiener_filter: bool = False,
         *args,
         **kwargs,
     ):
@@ -59,6 +64,24 @@ class DirectionalSparseFiltering(tfk.Model):
             istft_name="istft",
         )
 
+        self.wiener_filter = wiener_filter
+        if self.wiener_filter:
+            (
+                self.stft_finetune_op,
+                self.istft_finetune_op,
+            ) = kapre.composed.get_perfectly_reconstructing_stft_istft(
+                stft_input_shape=(n_samples, n_chan),
+                istft_input_shape=None,
+                n_fft=n_fft // 2,
+                win_length=n_fft // 2,
+                hop_length=hop_length // 2,
+                forward_window_name=window,
+                waveform_data_format="channels_last",
+                stft_data_format="channels_last",
+                stft_name="stft",
+                istft_name="istft",
+            )
+
         self.trim_begin = n_fft - hop_length
         self.n_freq = n_fft // 2 + 1
 
@@ -76,6 +99,7 @@ class DirectionalSparseFiltering(tfk.Model):
         self.n_src = n_src
         self.n_chan = n_chan
         self.n_samples = n_samples
+        self.inline_decoupling = inline_decoupling
 
         self.init_variables(x)
 
@@ -143,17 +167,14 @@ class DirectionalSparseFiltering(tfk.Model):
 
     def __fit__(
         self,
-        epoch: int = 10000,
-        optimizer: tfk.optimizers.Optimizer = tfk.optimizers.Adam(),
+        epoch: int = 1000,
+        optimizer: tfk.optimizers.Optimizer = tfk.optimizers.SGD(
+            learning_rate=0.1, momentum=0.99, nesterov=True
+        ),
         verbose: int = 1,
-        abs_tol: float = 1e-8,
-        rel_tol: float = 1e-5,
+        abs_tol: float = 1e-9,
+        rel_tol: float = 1e-8,
     ):
-
-        # if verbose > 0:
-        #     _tqdm = tqdm
-        # else:
-        #     _tqdm = lambda var: var
 
         prev_loss = -1.0
 
@@ -166,10 +187,12 @@ class DirectionalSparseFiltering(tfk.Model):
                 grads = tape.gradient(loss, self.trainable_weights)
                 optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
-                if tf.abs(prev_loss - loss) < abs_tol:
+                if tf.abs(prev_loss - loss) < abs_tol * self.n_freq:
+                    print("Absolute tolerance reached.")
                     break
 
                 if tf.abs(tf.abs(prev_loss - loss) / prev_loss) < rel_tol:
+                    print("Relative tolerance reached.")
                     break
 
                 prev_loss = loss
@@ -182,12 +205,45 @@ class DirectionalSparseFiltering(tfk.Model):
         else:
             raise NotImplementedError
 
-    def extract(self):
+    def extract(self, beta=12.5, max_iter=100, perm_tol=1e-8, proc_limit=1):
 
-        # X_bar.shape = (n_freq, n_frame, n_chan)
-        # H.shape = (n_freq, n_frame, n_chan, n_src)
+        if self.inline_decoupling:
+            H = self.loss_function.inline_decoupling_op(self.loss_function.H)
+        else:
+            H = self.loss_function.H
 
-        pass
+        Hnorm = H / tf.norm(H, axis=1, keepdims=True)
+
+        csim = tf.math.real(
+            complex_abs(
+                tf.reduce_sum(
+                    Hnorm[:, None, :, :] * tf.math.conj(self.X_bar[:, :, :, None]),
+                    axis=2,
+                )
+            )
+        )  # (n_freq, n_frame, n_src)
+
+        mask = tf.nn.softmax(-beta * csim, axis=-1)
+        mask, _ = palign(mask, max_iter=max_iter, tol=perm_tol, proc_limit=proc_limit)
+
+        Y = (
+            self.X[:, :, :, None] * mask[:, :, None, :]
+        )  # (n_freq, n_frame, n_chan, n_src)
+        y = self.istft(Y)
+
+        if self.wiener_filter:
+            Xf = self.stft_finetune_op(y)  # (n_src, n_frames, n_freq, n_chan)
+            Xn = Xf[..., 0] * tf.math.conj(Xf[..., 0])
+            Xnc = tf.reduce_sum(Xn, axis=0, keepdims=True)
+
+            G = Xn / Xnc
+
+            Y = G[..., None] * Xf
+            y = self.istft_finetune_op(Y)[
+                :, self.trim_begin : self.trim_begin + self.n_samples, :
+            ]
+
+        return y
 
 
 class LehmerMeanDSF(DirectionalSparseFiltering):
@@ -198,6 +254,7 @@ class LehmerMeanDSF(DirectionalSparseFiltering):
         fs: int,
         r: float = 0.5,
         alpha: float = 1.0,
+        inline_decoupling: bool = True,
         *args,
         **kwargs,
     ):
@@ -212,6 +269,7 @@ class LehmerMeanDSF(DirectionalSparseFiltering):
             distance_func=phase_invariant_cosine_squared_distance,
             time_pooling_func=tf.reduce_mean,
             freq_pooling_func=tf.reduce_sum,
+            inline_decoupling=inline_decoupling,
         )
 
 
@@ -222,12 +280,13 @@ class PowerMeanDSF(DirectionalSparseFiltering):
         n_src: int,
         fs: int,
         p: float = -0.5,
+        inline_decoupling: bool = True,
         *args,
         **kwargs,
     ):
         super().__init__(x, n_src, fs, *args, **kwargs)
 
-        self.loss_function = LehmerMeanDSFLoss(
+        self.loss_function = PowerMeanDSFLoss(
             self.n_freq,
             self.n_chan,
             self.n_src,
@@ -235,4 +294,5 @@ class PowerMeanDSF(DirectionalSparseFiltering):
             distance_func=phase_invariant_cosine_squared_distance,
             time_pooling_func=tf.reduce_mean,
             freq_pooling_func=tf.reduce_sum,
+            inline_decoupling=inline_decoupling,
         )

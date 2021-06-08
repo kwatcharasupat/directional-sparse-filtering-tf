@@ -1,4 +1,4 @@
-from unicodedata import ucd_3_2_0
+from modules.utils import complex_abs
 import tensorflow as tf
 import tensorflow.keras as tfk
 import tensorflow.keras.layers as tfkl
@@ -6,20 +6,22 @@ import tensorflow.keras.layers as tfkl
 
 def phase_invariant_cosine_squared_distance(u, v, axis):
 
-    return 1.0 - tf.square(tf.abs(tf.reduce_sum(u * v, axis=axis)))
+    return 1.0 - tf.math.real(
+        complex_abs(tf.reduce_sum(u * tf.math.conj(v), axis=axis))
+    )
 
 
 class PowerMean(tfk.Model):
     def __init__(self, p=-0.5, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__()
 
         self.p = p
 
-    def call(self, dist, axis=-1):
+    def call(self, dist, axis=-1, eps=1e-6):
 
-        dist_pow = tf.pow(dist, self.p)
+        dist_pow = tf.pow(dist + eps, self.p)
         dist_pow_mean = tf.reduce_mean(dist_pow, axis=axis)
-        dist_pm = tf.pow(dist_pow_mean, 1.0 / self.p)
+        dist_pm = tf.pow(dist_pow_mean + eps, 1.0 / self.p)
 
         return dist_pm
 
@@ -27,8 +29,8 @@ class PowerMean(tfk.Model):
 class LehmerMean(tfk.Model):
     def __init__(self, n_freq, n_src, r=0.5, alpha=1, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        
-        assert alpha >= 0.
+
+        assert alpha >= 0.0
 
         init_w = tf.ones(shape=(n_freq, n_src))
         self.w = tf.Variable(initial_value=init_w, trainable=True)
@@ -43,9 +45,12 @@ class LehmerMean(tfk.Model):
 
         w = tf.maximum(self.w + self.alpha, self.alpha)
 
-        dr1 = tf.pow(tf.maximum(dist, eps), self.r - 1) * w[:, None, :]
-        dr = tf.reduce_mean(dr1 * dist, axis=-1)
-        dr1 = tf.reduce_mean(dr1, axis=-1)
+        dr1 = tf.reduce_mean(
+            tf.pow(tf.maximum(dist, eps), self.r - 1) * w[:, None, :], axis=-1
+        )
+        dr = tf.reduce_mean(
+            tf.pow(tf.maximum(dist, eps), self.r) * w[:, None, :], axis=-1
+        )
 
         return dr / dr1
 
