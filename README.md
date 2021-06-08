@@ -15,7 +15,7 @@ A. H. T. Nguyen, V. G. Reju, A. W. H. Khong and I. Y. Soon, "Learning complex-va
 ## Dependencies
 ```
 - numpy
-- tensorflow
+- tensorflow >= 2.0
 - kapre
 - lapjv
 - fire
