@@ -1,5 +1,9 @@
 # Directional Sparse Filtering: Tensorflow/Keras Implementation
 
+### Implementation Note: 
+- GPU support is highly dependent on individual Tensorflow version's support. As of v2.4.1, not all required operations are supported yet so only CPU-based running is available.
+- Inline decoupling operation is currently not producing the same result as MATLAB presumably due to complex gradient issue on TF. Non-decoupling version is running correctly. From our experience, the performance drop should be minimal.
+
 ## Python Code for the following papers:
 
 K. Watcharasupat, A. H. T. Nguyen, C. -H. Ooi and A. W. H. Khong, "Directional Sparse Filtering Using Weighted Lehmer Mean for Blind Separation of Unbalanced Speech Mixtures," ICASSP 2021 - 2021 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP), 2021, pp. 4485-4489, doi: 10.1109/ICASSP39728.2021.9414336. [[paper]](https://ieeexplore.ieee.org/document/9414336)
