@@ -7,7 +7,7 @@ import tensorflow.keras.layers as tfkl
 def phase_invariant_cosine_squared_distance(u, v, axis):
 
     return 1.0 - tf.math.real(
-        complex_abs(tf.reduce_sum(u * tf.math.conj(v), axis=axis))
+        tf.reduce_sum(tf.math.conj(u) * v, axis=axis) * tf.reduce_sum(u * tf.math.conj(v), axis=axis)
     )
 
 
@@ -67,6 +67,8 @@ class DSFLoss(tfk.Model):
         time_pooling_func=tf.reduce_mean,
         freq_pooling_func=tf.reduce_mean,
         inline_decoupling=True,
+        real_dtype=tf.float32,
+        complex_dtype=tf.complex64,
         *args,
         **kwargs
     ):
@@ -83,13 +85,16 @@ class DSFLoss(tfk.Model):
         self.distance_func = distance_func
         self.time_pooling_func = time_pooling_func
         self.freq_pooling_func = freq_pooling_func
+        
+        self.real_dtype = real_dtype
+        self.complex_dtype = complex_dtype
 
         init_mixing_matrix = tf.complex(
             tf.random.normal(
-                shape=(self.n_freq, self.n_chan, self.n_src), dtype=tf.float32
+                shape=(self.n_freq, self.n_chan, self.n_src), dtype=self.real_dtype
             ),
             tf.random.normal(
-                shape=(self.n_freq, self.n_chan, self.n_src), dtype=tf.float32
+                shape=(self.n_freq, self.n_chan, self.n_src), dtype=self.real_dtype
             ),
         )
 

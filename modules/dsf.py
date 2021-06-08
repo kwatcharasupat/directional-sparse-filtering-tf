@@ -1,3 +1,4 @@
+from tensorflow.python.platform.tf_logging import warning
 from modules.permutation_alignment import permutation_alignment7
 from modules.losses import (
     LehmerMeanDSFLoss,
@@ -22,17 +23,53 @@ class DirectionalSparseFiltering(tfk.Model):
         n_src: int,
         fs: int,
         n_fft: int = None,
-        hop_length: int = None,
+        hop_length: Union[float, int] = None,
         window: str = "hann_window",
         waveform_data_format: str = "channels_last",
-        precision: int = 64,
-        eps: float = 1e-12,
-        inline_decoupling: bool = True,
+        precision: int = 32,
+        inline_decoupling: bool = False,
         wiener_filter: bool = False,
-        *args,
-        **kwargs,
     ):
-        super().__init__(*args, **kwargs)
+        """
+        Base Class for Directional Sparse Filtering (DSF)
+
+        This class serves as a "system" wrapper for the entire DSF pipeline rather than a specific implementation.
+        The "trainable variables" are contained in the specific loss module rather than in this class.
+
+        Parameters
+        ----------
+        x : Union[np.ndarray, tf.Tensor], shape=(n_samples, n_chan)
+            input mixture
+        n_src : int
+            number of sources
+        fs : int
+            sampling rate in Hertz
+        n_fft : int, optional
+            FFT length, by default None
+            If None, calculated from `fs` using `n_fft = nextpow2(2048*fs/16000)`
+        hop_length : int, optional
+            Hop size, by default None
+            If integer, treated as number of samples. If float, treated as a fraction of `n_fft`.
+            If None, default to `n_fft//4` if `n_fft` is also None. Otherwise, default kapre behaviour.
+        window : str, optional
+            Window function, by default "hann_window"
+            See `kapre.backend.get_window()` for available windows
+        waveform_data_format : str, optional
+            The audio data format of waveform batch, by default "channels_last"
+            See https://kapre.readthedocs.io/en/latest/composed.html
+        precision : int, optional
+            Precision in bit, by default 64
+        inline_decoupling : bool, optional
+            Whether to use inline decoupling, by default False
+        wiener_filter : bool, optional
+            Whether to use Wiener filter to postprocess the extracted signal, by default False
+        """
+        super().__init__()
+
+        if inline_decoupling:
+            warning(
+                "Inline decoupling currently has inconsistent behaviour on Tensorflow. We recommend that this is turned off for now."
+            )
 
         n_samples, n_chan = x.shape
 
@@ -86,16 +123,20 @@ class DirectionalSparseFiltering(tfk.Model):
         self.n_freq = n_fft // 2 + 1
 
         # initialize variables
-        assert precision in [32, 64]
+        assert precision in [32], "Only 32-bit precision is currently supported"
 
         if precision == 32:
+            tf.keras.backend.set_floatx('float32')
             self.real_dtype = tf.float32
             self.complex_dtype = tf.complex64
         elif precision == 64:
-            self.real_dtype = tf.float64
-            self.complex_dtype = tf.complex128
+            raise NotImplementedError
+            # tf.keras.backend.set_floatx('float64')
+            # self.real_dtype = tf.float64
+            # self.complex_dtype = tf.complex128
+        else:
+            raise NotImplementedError
 
-        self.eps = eps
         self.n_src = n_src
         self.n_chan = n_chan
         self.n_samples = n_samples
@@ -105,15 +146,20 @@ class DirectionalSparseFiltering(tfk.Model):
 
     def init_variables(self, x):
         x = tf.convert_to_tensor(x, dtype=self.real_dtype)
+        print(x.dtype)
         self.X = self.stft(x)
+        print(self.X.dtype)
         self.Xwhite, self.Q, self.Qinv = self.whitening(self.X)
+        print(self.Xwhite.dtype)
         self.X_bar = self.column_norm(self.Xwhite)
+        print(self.X_bar.dtype)
 
     def stft(self, x):
 
         x = x[None, :, :]  # (1, n_samples, n_chan)
 
         X = self.stft_op(x)  # (1, n_frames, n_freq, n_chan)
+        print(X.dtype)
         X = tf.squeeze(X)  # (n_frames, n_freq, n_chan)
         X = tf.transpose(X, (1, 0, 2))  # (n_freq, n_frames, n_chan)
 
@@ -131,9 +177,9 @@ class DirectionalSparseFiltering(tfk.Model):
 
         return x
 
-    def column_norm(self, X):
+    def column_norm(self, X, eps=1e-8):
 
-        norm = tf.norm(X, axis=-1, keepdims=True) + self.eps
+        norm = tf.norm(X, axis=-1, keepdims=True) + eps
         X_bar = X / norm
 
         return X_bar
@@ -173,7 +219,7 @@ class DirectionalSparseFiltering(tfk.Model):
         ),
         verbose: int = 1,
         abs_tol: float = 1e-9,
-        rel_tol: float = 1e-8,
+        rel_tol: float = 1e-6,
     ):
 
         prev_loss = -1.0
@@ -240,7 +286,7 @@ class DirectionalSparseFiltering(tfk.Model):
 
             Y = G[..., None] * Xf
             y = self.istft_finetune_op(Y)[
-                :, self.trim_begin : self.trim_begin + self.n_samples, :
+                :, self.trim_begin // 2 : self.trim_begin // 2 + self.n_samples, :
             ]
 
         return y
@@ -254,10 +300,27 @@ class LehmerMeanDSF(DirectionalSparseFiltering):
         fs: int,
         r: float = 0.5,
         alpha: float = 1.0,
-        inline_decoupling: bool = True,
         *args,
         **kwargs,
     ):
+        """
+        Convenience class for DSF via Lehmer Mean as implemented in
+
+            K. Watcharasupat, A. H. T. Nguyen, C. -H. Ooi and A. W. H. Khong,
+            "Directional Sparse Filtering Using Weighted Lehmer Mean for Blind
+            Separation of Unbalanced Speech Mixtures," ICASSP 2021 - 2021 IEEE 
+            International Conference on Acoustics, Speech and Signal Processing 
+            (ICASSP), 2021, pp. 4485-4489, doi: 10.1109/ICASSP39728.2021.9414336.
+            
+        Additional Parameters
+        ---------------------
+        r : float, optional
+            Exponent for Lehmer mean, by default 0.5
+        alpha : float, optional
+            Weight smoothing parameter, by default 1.0
+            
+        See `dsf.DirectionalSparseFiltering` for other parameters
+        """
         super().__init__(x, n_src, fs, *args, **kwargs)
 
         self.loss_function = LehmerMeanDSFLoss(
@@ -269,7 +332,9 @@ class LehmerMeanDSF(DirectionalSparseFiltering):
             distance_func=phase_invariant_cosine_squared_distance,
             time_pooling_func=tf.reduce_mean,
             freq_pooling_func=tf.reduce_sum,
-            inline_decoupling=inline_decoupling,
+            inline_decoupling=self.inline_decoupling,
+            real_dtype=self.real_dtype,
+            complex_dtype=self.complex_dtype
         )
 
 
@@ -280,10 +345,31 @@ class PowerMeanDSF(DirectionalSparseFiltering):
         n_src: int,
         fs: int,
         p: float = -0.5,
-        inline_decoupling: bool = True,
         *args,
         **kwargs,
     ):
+        """
+        Convenience class for DSF via Power Mean as implemented in
+
+            A. H. T. Nguyen, V. G. Reju and A. W. H. Khong, 
+            "Directional Sparse Filtering for Blind Estimation of 
+            Under-Determined Complex-Valued Mixing Matrices," in 
+            IEEE Transactions on Signal Processing, vol. 68, pp. 
+            1990-2003, 2020, doi: 10.1109/TSP.2020.2979550. 
+
+            A. H. T. Nguyen, V. G. Reju, A. W. H. Khong and I. Y. Soon, 
+            "Learning complex-valued latent filters with absolute cosine 
+            similarity," 2017 IEEE International Conference on Acoustics, 
+            Speech and Signal Processing (ICASSP), 2017, pp. 2412-2416, 
+            doi: 10.1109/ICASSP.2017.7952589. 
+            
+        Additional Parameters
+        ---------------------
+        p : float, optional
+            Exponent for power mean, by default -0.5
+            
+        See `dsf.DirectionalSparseFiltering` for other parameters
+        """
         super().__init__(x, n_src, fs, *args, **kwargs)
 
         self.loss_function = PowerMeanDSFLoss(
@@ -294,5 +380,7 @@ class PowerMeanDSF(DirectionalSparseFiltering):
             distance_func=phase_invariant_cosine_squared_distance,
             time_pooling_func=tf.reduce_mean,
             freq_pooling_func=tf.reduce_sum,
-            inline_decoupling=inline_decoupling,
+            inline_decoupling=self.inline_decoupling,
+            real_dtype=self.real_dtype,
+            complex_dtype=self.complex_dtype
         )
