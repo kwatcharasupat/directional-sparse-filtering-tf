@@ -66,6 +66,24 @@ class DirectionalSparseFiltering(tfk.Model):
         """
         super().__init__()
 
+        # initialize variables
+        assert precision in [
+            32,
+            64,
+        ], "Only 32-bit and 64-bit precision are currently supported"
+
+        if precision == 32:
+            tf.keras.backend.set_floatx("float32")
+            self.real_dtype = tf.float32
+            self.complex_dtype = tf.complex64
+        elif precision == 64:
+            # raise NotImplementedError
+            tf.keras.backend.set_floatx("float64")
+            self.real_dtype = tf.float64
+            self.complex_dtype = tf.complex128
+        else:
+            raise NotImplementedError
+
         if inline_decoupling:
             warning(
                 "Inline decoupling currently has inconsistent behaviour on Tensorflow. We recommend that this is turned off for now."
@@ -122,21 +140,6 @@ class DirectionalSparseFiltering(tfk.Model):
         self.trim_begin = n_fft - hop_length
         self.n_freq = n_fft // 2 + 1
 
-        # initialize variables
-        assert precision in [32], "Only 32-bit precision is currently supported"
-
-        if precision == 32:
-            tf.keras.backend.set_floatx('float32')
-            self.real_dtype = tf.float32
-            self.complex_dtype = tf.complex64
-        elif precision == 64:
-            raise NotImplementedError
-            # tf.keras.backend.set_floatx('float64')
-            # self.real_dtype = tf.float64
-            # self.complex_dtype = tf.complex128
-        else:
-            raise NotImplementedError
-
         self.n_src = n_src
         self.n_chan = n_chan
         self.n_samples = n_samples
@@ -146,20 +149,14 @@ class DirectionalSparseFiltering(tfk.Model):
 
     def init_variables(self, x):
         x = tf.convert_to_tensor(x, dtype=self.real_dtype)
-        print(x.dtype)
         self.X = self.stft(x)
-        print(self.X.dtype)
         self.Xwhite, self.Q, self.Qinv = self.whitening(self.X)
-        print(self.Xwhite.dtype)
         self.X_bar = self.column_norm(self.Xwhite)
-        print(self.X_bar.dtype)
 
     def stft(self, x):
 
         x = x[None, :, :]  # (1, n_samples, n_chan)
-
         X = self.stft_op(x)  # (1, n_frames, n_freq, n_chan)
-        print(X.dtype)
         X = tf.squeeze(X)  # (n_frames, n_freq, n_chan)
         X = tf.transpose(X, (1, 0, 2))  # (n_freq, n_frames, n_chan)
 
@@ -308,17 +305,17 @@ class LehmerMeanDSF(DirectionalSparseFiltering):
 
             K. Watcharasupat, A. H. T. Nguyen, C. -H. Ooi and A. W. H. Khong,
             "Directional Sparse Filtering Using Weighted Lehmer Mean for Blind
-            Separation of Unbalanced Speech Mixtures," ICASSP 2021 - 2021 IEEE 
-            International Conference on Acoustics, Speech and Signal Processing 
+            Separation of Unbalanced Speech Mixtures," ICASSP 2021 - 2021 IEEE
+            International Conference on Acoustics, Speech and Signal Processing
             (ICASSP), 2021, pp. 4485-4489, doi: 10.1109/ICASSP39728.2021.9414336.
-            
+
         Additional Parameters
         ---------------------
         r : float, optional
             Exponent for Lehmer mean, by default 0.5
         alpha : float, optional
             Weight smoothing parameter, by default 1.0
-            
+
         See `dsf.DirectionalSparseFiltering` for other parameters
         """
         super().__init__(x, n_src, fs, *args, **kwargs)
@@ -334,7 +331,7 @@ class LehmerMeanDSF(DirectionalSparseFiltering):
             freq_pooling_func=tf.reduce_sum,
             inline_decoupling=self.inline_decoupling,
             real_dtype=self.real_dtype,
-            complex_dtype=self.complex_dtype
+            complex_dtype=self.complex_dtype,
         )
 
 
@@ -351,23 +348,23 @@ class PowerMeanDSF(DirectionalSparseFiltering):
         """
         Convenience class for DSF via Power Mean as implemented in
 
-            A. H. T. Nguyen, V. G. Reju and A. W. H. Khong, 
-            "Directional Sparse Filtering for Blind Estimation of 
-            Under-Determined Complex-Valued Mixing Matrices," in 
-            IEEE Transactions on Signal Processing, vol. 68, pp. 
-            1990-2003, 2020, doi: 10.1109/TSP.2020.2979550. 
+            A. H. T. Nguyen, V. G. Reju and A. W. H. Khong,
+            "Directional Sparse Filtering for Blind Estimation of
+            Under-Determined Complex-Valued Mixing Matrices," in
+            IEEE Transactions on Signal Processing, vol. 68, pp.
+            1990-2003, 2020, doi: 10.1109/TSP.2020.2979550.
 
-            A. H. T. Nguyen, V. G. Reju, A. W. H. Khong and I. Y. Soon, 
-            "Learning complex-valued latent filters with absolute cosine 
-            similarity," 2017 IEEE International Conference on Acoustics, 
-            Speech and Signal Processing (ICASSP), 2017, pp. 2412-2416, 
-            doi: 10.1109/ICASSP.2017.7952589. 
-            
+            A. H. T. Nguyen, V. G. Reju, A. W. H. Khong and I. Y. Soon,
+            "Learning complex-valued latent filters with absolute cosine
+            similarity," 2017 IEEE International Conference on Acoustics,
+            Speech and Signal Processing (ICASSP), 2017, pp. 2412-2416,
+            doi: 10.1109/ICASSP.2017.7952589.
+
         Additional Parameters
         ---------------------
         p : float, optional
             Exponent for power mean, by default -0.5
-            
+
         See `dsf.DirectionalSparseFiltering` for other parameters
         """
         super().__init__(x, n_src, fs, *args, **kwargs)
@@ -382,5 +379,5 @@ class PowerMeanDSF(DirectionalSparseFiltering):
             freq_pooling_func=tf.reduce_sum,
             inline_decoupling=self.inline_decoupling,
             real_dtype=self.real_dtype,
-            complex_dtype=self.complex_dtype
+            complex_dtype=self.complex_dtype,
         )

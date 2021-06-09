@@ -27,13 +27,13 @@ class PowerMean(tfk.Model):
 
 
 class LehmerMean(tfk.Model):
-    def __init__(self, n_freq, n_src, r=0.5, alpha=1, *args, **kwargs):
+    def __init__(self, n_freq, n_src, r=0.5, alpha=1, real_dtype=tf.float32, complex_dtype=tf.complex64,*args, **kwargs):
         super().__init__(*args, **kwargs)
 
         assert alpha >= 0.0
 
-        init_w = tf.ones(shape=(n_freq, n_src))
-        self.w = tf.Variable(initial_value=init_w, trainable=True)
+        init_w = tf.ones(shape=(n_freq, n_src), dtype=real_dtype)
+        self.w = tf.Variable(initial_value=init_w, trainable=True, dtype=real_dtype)
 
         self.r = r
         self.alpha = alpha
@@ -150,7 +150,7 @@ class PowerMeanDSFLoss(DSFLoss):
             n_chan,
             n_src,
             src_pooling_func=PowerMean,
-            src_func_kwargs={"p": p},
+            src_func_kwargs={"p": p, **kwargs},
             distance_func=distance_func,
             time_pooling_func=time_pooling_func,
             freq_pooling_func=freq_pooling_func,
@@ -180,7 +180,7 @@ class LehmerMeanDSFLoss(DSFLoss):
             n_chan,
             n_src,
             src_pooling_func=LehmerMean,
-            src_func_kwargs={"r": r, "alpha": alpha},
+            src_func_kwargs={"r": r, "alpha": alpha, **kwargs},
             distance_func=distance_func,
             time_pooling_func=time_pooling_func,
             freq_pooling_func=freq_pooling_func,
