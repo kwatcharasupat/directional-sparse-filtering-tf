@@ -7,7 +7,8 @@ import tensorflow.keras.layers as tfkl
 def phase_invariant_cosine_squared_distance(u, v, axis):
 
     return 1.0 - tf.math.real(
-        tf.reduce_sum(tf.math.conj(u) * v, axis=axis) * tf.reduce_sum(u * tf.math.conj(v), axis=axis)
+        tf.reduce_sum(tf.math.conj(u) * v, axis=axis)
+        * tf.reduce_sum(u * tf.math.conj(v), axis=axis)
     )
 
 
@@ -27,12 +28,23 @@ class PowerMean(tfk.Model):
 
 
 class LehmerMean(tfk.Model):
-    def __init__(self, n_freq, n_src, r=0.5, alpha=1, real_dtype=tf.float32, complex_dtype=tf.complex64,*args, **kwargs):
+    def __init__(
+        self,
+        n_freq,
+        n_src,
+        r=0.5,
+        alpha=1,
+        w_init=1.0,
+        real_dtype=tf.float32,
+        complex_dtype=tf.complex64,
+        *args,
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
 
         assert alpha >= 0.0
 
-        init_w = tf.ones(shape=(n_freq, n_src), dtype=real_dtype)
+        init_w = w_init * tf.ones(shape=(n_freq, n_src), dtype=real_dtype)
         self.w = tf.Variable(initial_value=init_w, trainable=True, dtype=real_dtype)
 
         self.r = r
@@ -85,22 +97,27 @@ class DSFLoss(tfk.Model):
         self.distance_func = distance_func
         self.time_pooling_func = time_pooling_func
         self.freq_pooling_func = freq_pooling_func
-        
+
         self.real_dtype = real_dtype
         self.complex_dtype = complex_dtype
 
         init_mixing_matrix = tf.complex(
             tf.random.normal(
-                shape=(self.n_freq, self.n_chan, self.n_src), dtype=self.real_dtype
+                shape=(self.n_freq, self.n_chan, self.n_src),
+                dtype=self.real_dtype,
             ),
             tf.random.normal(
-                shape=(self.n_freq, self.n_chan, self.n_src), dtype=self.real_dtype
+                shape=(self.n_freq, self.n_chan, self.n_src),
+                dtype=self.real_dtype,
             ),
         )
 
         self.H = tf.Variable(initial_value=init_mixing_matrix, trainable=True)
 
         self.inline_decoupling = inline_decoupling
+
+        if self.inline_decoupling:
+            self.H = self.inline_decoupling_op(self.H)
 
     def inline_decoupling_op(self, H):
 
@@ -118,7 +135,7 @@ class DSFLoss(tfk.Model):
         else:
             H = self.H
 
-        Hnorm = H / tf.norm(H, axis=1, keepdims=True)
+        Hnorm = H / tf.norm(H, ord=2, axis=1, keepdims=True)
 
         srcframe_dist = self.distance_func(
             Hnorm[:, None, :, :], Xbar[:, :, :, None], axis=2
@@ -168,6 +185,7 @@ class LehmerMeanDSFLoss(DSFLoss):
         n_src,
         r=0.5,
         alpha=1.0,
+        n_frames=None,
         distance_func=phase_invariant_cosine_squared_distance,
         time_pooling_func=tf.reduce_mean,
         freq_pooling_func=tf.reduce_mean,
@@ -180,7 +198,12 @@ class LehmerMeanDSFLoss(DSFLoss):
             n_chan,
             n_src,
             src_pooling_func=LehmerMean,
-            src_func_kwargs={"r": r, "alpha": alpha, **kwargs},
+            src_func_kwargs={
+                "r": r,
+                "alpha": alpha,
+                "w_init": n_frames + (n_src - 1) * alpha,
+                **kwargs,
+            },
             distance_func=distance_func,
             time_pooling_func=time_pooling_func,
             freq_pooling_func=freq_pooling_func,

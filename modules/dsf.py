@@ -143,9 +143,11 @@ class DirectionalSparseFiltering(tfk.Model):
         self.n_src = n_src
         self.n_chan = n_chan
         self.n_samples = n_samples
+        
         self.inline_decoupling = inline_decoupling
 
         self.init_variables(x)
+        self.n_frames = self.X.shape[1]
 
     def init_variables(self, x):
         x = tf.convert_to_tensor(x, dtype=self.real_dtype)
@@ -176,7 +178,7 @@ class DirectionalSparseFiltering(tfk.Model):
 
     def column_norm(self, X, eps=1e-8):
 
-        norm = tf.norm(X, axis=-1, keepdims=True) + eps
+        norm = tf.norm(X, ord=2, axis=-1, keepdims=True) #+ eps
         X_bar = X / norm
 
         return X_bar
@@ -201,8 +203,8 @@ class DirectionalSparseFiltering(tfk.Model):
         Dsqrt = tf.linalg.diag(tf.cast(tf.math.real(Drt), U.dtype))
         Disqrt = tf.linalg.diag(tf.cast(tf.math.real(1.0 / Drt), U.dtype))
 
-        Q = tf.matmul(tf.matmul(U, Dsqrt), U, adjoint_b=True)
-        Qinv = tf.matmul(tf.matmul(U, Disqrt), U, adjoint_b=True)
+        Q = tf.matmul(tf.matmul(U, Disqrt), U, adjoint_b=True)
+        Qinv = tf.matmul(tf.matmul(U, Dsqrt), U, adjoint_b=True)
 
         Xwhite = tf.transpose(tf.matmul(Q, X), (0, 2, 1))  # (n_freq, n_frames, n_chan)
 
@@ -212,14 +214,14 @@ class DirectionalSparseFiltering(tfk.Model):
         self,
         epoch: int = 1000,
         optimizer: tfk.optimizers.Optimizer = tfk.optimizers.SGD(
-            learning_rate=0.1, momentum=0.99, nesterov=True
+            learning_rate=1.0, momentum=0.9, nesterov=True
         ),
         verbose: int = 1,
-        abs_tol: float = 1e-9,
-        rel_tol: float = 1e-6,
+        abs_tol: float = 1e-8,
+        rel_tol: float = 1e-5,
     ):
 
-        prev_loss = -1.0
+        prev_loss = None
 
         with tqdm(range(epoch)) as t:
             for i in t:
@@ -230,11 +232,11 @@ class DirectionalSparseFiltering(tfk.Model):
                 grads = tape.gradient(loss, self.trainable_weights)
                 optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
-                if tf.abs(prev_loss - loss) < abs_tol * self.n_freq:
+                if prev_loss is not None and tf.abs(prev_loss - loss) < abs_tol * self.n_freq:
                     print("Absolute tolerance reached.")
                     break
 
-                if tf.abs(tf.abs(prev_loss - loss) / prev_loss) < rel_tol:
+                if prev_loss is not None and tf.abs(tf.abs(prev_loss - loss) / prev_loss) < rel_tol:
                     print("Relative tolerance reached.")
                     break
 
@@ -326,6 +328,7 @@ class LehmerMeanDSF(DirectionalSparseFiltering):
             self.n_src,
             r=r,
             alpha=alpha,
+            n_frames=self.n_frames,
             distance_func=phase_invariant_cosine_squared_distance,
             time_pooling_func=tf.reduce_mean,
             freq_pooling_func=tf.reduce_sum,
