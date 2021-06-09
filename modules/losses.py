@@ -135,7 +135,7 @@ class DSFLoss(tfk.Model):
         else:
             H = self.H
 
-        Hnorm = H / tf.norm(H, ord=2, axis=1, keepdims=True)
+        Hnorm, _ = tf.linalg.normalize(H, axis=1)
 
         srcframe_dist = self.distance_func(
             Hnorm[:, None, :, :], Xbar[:, :, :, None], axis=2

@@ -177,10 +177,7 @@ class DirectionalSparseFiltering(tfk.Model):
         return x
 
     def column_norm(self, X, eps=1e-8):
-
-        norm = tf.norm(X, ord=2, axis=-1, keepdims=True) #+ eps
-        X_bar = X / norm
-
+        X_bar, _ = tf.linalg.normalize(X, axis=-1)
         return X_bar
 
     def whitening(self, X, eps=1e-16):
@@ -198,7 +195,7 @@ class DirectionalSparseFiltering(tfk.Model):
 
         D, U, _ = tf.linalg.svd(covX)
 
-        Drt = tf.sqrt(tf.maximum(D, eps))
+        Drt = tf.sqrt(D) #tf.sqrt(tf.maximum(D, eps))
 
         Dsqrt = tf.linalg.diag(tf.cast(tf.math.real(Drt), U.dtype))
         Disqrt = tf.linalg.diag(tf.cast(tf.math.real(1.0 / Drt), U.dtype))
@@ -257,7 +254,7 @@ class DirectionalSparseFiltering(tfk.Model):
         else:
             H = self.loss_function.H
 
-        Hnorm = H / tf.norm(H, axis=1, keepdims=True)
+        Hnorm, _ = tf.linalg.normalize(H , axis=1)
 
         csim = tf.math.real(
             complex_abs(
