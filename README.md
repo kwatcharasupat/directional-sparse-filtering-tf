@@ -1,8 +1,9 @@
 # Directional Sparse Filtering: Tensorflow/Keras Implementation
 
 ### Implementation Note: 
-- GPU support is highly dependent on individual Tensorflow version's support. As of v2.4.1, not all required operations are supported yet so only CPU-based running is available.
-- Inline decoupling operation is currently not producing the same result as MATLAB presumably due to complex gradient issue on TF. Non-decoupling version is running correctly. From our experience, the performance drop should be minimal.
+- GPU support is highly dependent on individual Tensorflow version's support. As of v2.4.1, not all required operations are supported yet so some operation will be delegated to CPU. To use CPU only, set `use_real_proxies=False`. To use a mix of CPU and GPU, set `use_real_proxies=True`.
+
+- Inline decoupling operation is currently not producing the same result as MATLAB presumably due to complex gradient issue on TF. Non-decoupling version is running correctly. From our experience, the performance drop should be minimal. We provided a constraint-projection implementation in lieu of this, if `inline_decoupling` is set to `True`, but this is known to produce worse optima than inline decoupling.
 
 ## Python Code for the following papers:
 
@@ -17,7 +18,7 @@ A. H. T. Nguyen, V. G. Reju, A. W. H. Khong and I. Y. Soon, "Learning complex-va
 - numpy
 - tensorflow >= 2.0
 - kapre
-- lapjv
+- lapjv == 1.3.1
 - fire
 - tqdm
 ```

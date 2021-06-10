@@ -29,6 +29,7 @@ class DirectionalSparseFiltering(tfk.Model):
         precision: int = 32,
         inline_decoupling: bool = False,
         wiener_filter: bool = False,
+        use_real_proxies: bool = False,
     ):
         """
         Base Class for Directional Sparse Filtering (DSF)
@@ -143,17 +144,32 @@ class DirectionalSparseFiltering(tfk.Model):
         self.n_src = n_src
         self.n_chan = n_chan
         self.n_samples = n_samples
-        
+
+        self.use_real_proxies = use_real_proxies
+        # if self.use_real_proxies:
+        #     assert (
+        #         not inline_decoupling
+        #     ), "inline decoupling is not available in real proxies mode"
         self.inline_decoupling = inline_decoupling
 
         self.init_variables(x)
         self.n_frames = self.X.shape[1]
 
     def init_variables(self, x):
+
         x = tf.convert_to_tensor(x, dtype=self.real_dtype)
         self.X = self.stft(x)
-        self.Xwhite, self.Q, self.Qinv = self.whitening(self.X)
-        self.X_bar = self.column_norm(self.Xwhite)
+
+        with tf.device("/CPU:0"):
+            self.Xwhite, self.Q, self.Qinv = self.whitening(self.X)
+            self.X_bar = self.column_norm(self.Xwhite)
+
+        self.X_bar_ = self.X_bar
+
+        if self.use_real_proxies:
+            self.X_bar = tf.stack(
+                [tf.math.real(self.X_bar), tf.math.imag(self.X_bar)], axis=-1
+            )
 
     def stft(self, x):
 
@@ -178,6 +194,7 @@ class DirectionalSparseFiltering(tfk.Model):
 
     def column_norm(self, X, eps=1e-8):
         X_bar, _ = tf.linalg.normalize(X, axis=-1)
+        
         return X_bar
 
     def whitening(self, X, eps=1e-16):
@@ -195,7 +212,7 @@ class DirectionalSparseFiltering(tfk.Model):
 
         D, U, _ = tf.linalg.svd(covX)
 
-        Drt = tf.sqrt(D) #tf.sqrt(tf.maximum(D, eps))
+        Drt = tf.sqrt(D)  # tf.sqrt(tf.maximum(D, eps))
 
         Dsqrt = tf.linalg.diag(tf.cast(tf.math.real(Drt), U.dtype))
         Disqrt = tf.linalg.diag(tf.cast(tf.math.real(1.0 / Drt), U.dtype))
@@ -229,11 +246,17 @@ class DirectionalSparseFiltering(tfk.Model):
                 grads = tape.gradient(loss, self.trainable_weights)
                 optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
-                if prev_loss is not None and tf.abs(prev_loss - loss) < abs_tol * self.n_freq:
+                if (
+                    prev_loss is not None
+                    and tf.abs(prev_loss - loss) < abs_tol * self.n_freq
+                ):
                     print("Absolute tolerance reached.")
                     break
 
-                if prev_loss is not None and tf.abs(tf.abs(prev_loss - loss) / prev_loss) < rel_tol:
+                if (
+                    prev_loss is not None
+                    and tf.abs(tf.abs(prev_loss - loss) / prev_loss) < rel_tol
+                ):
                     print("Relative tolerance reached.")
                     break
 
@@ -249,41 +272,48 @@ class DirectionalSparseFiltering(tfk.Model):
 
     def extract(self, beta=12.5, max_iter=100, perm_tol=1e-8, proc_limit=1):
 
-        if self.inline_decoupling:
-            H = self.loss_function.inline_decoupling_op(self.loss_function.H)
-        else:
+        with tf.device("/CPU:0"):
+
+            if self.inline_decoupling:
+                self.loss_function.inline_decoupling_op()
+
             H = self.loss_function.H
 
-        Hnorm, _ = tf.linalg.normalize(H , axis=1)
+            if self.use_real_proxies:
+                H = tf.complex(H[..., 0], H[..., 1])
 
-        csim = tf.math.real(
-            complex_abs(
-                tf.reduce_sum(
-                    Hnorm[:, None, :, :] * tf.math.conj(self.X_bar[:, :, :, None]),
-                    axis=2,
+            Hnorm, _ = tf.linalg.normalize(H, axis=1)
+
+            csim = tf.math.real(
+                complex_abs(
+                    tf.reduce_sum(
+                        Hnorm[:, None, :, :] * tf.math.conj(self.X_bar_[:, :, :, None]),
+                        axis=2,
+                    )
                 )
+            )  # (n_freq, n_frame, n_src)
+
+            mask = tf.nn.softmax(-beta * csim, axis=-1)
+            mask, _ = palign(
+                mask, max_iter=max_iter, tol=perm_tol, proc_limit=proc_limit
             )
-        )  # (n_freq, n_frame, n_src)
 
-        mask = tf.nn.softmax(-beta * csim, axis=-1)
-        mask, _ = palign(mask, max_iter=max_iter, tol=perm_tol, proc_limit=proc_limit)
+            Y = (
+                self.X[:, :, :, None] * mask[:, :, None, :]
+            )  # (n_freq, n_frame, n_chan, n_src)
+            y = self.istft(Y)
 
-        Y = (
-            self.X[:, :, :, None] * mask[:, :, None, :]
-        )  # (n_freq, n_frame, n_chan, n_src)
-        y = self.istft(Y)
+            if self.wiener_filter:
+                Xf = self.stft_finetune_op(y)  # (n_src, n_frames, n_freq, n_chan)
+                Xn = Xf[..., 0] * tf.math.conj(Xf[..., 0])
+                Xnc = tf.reduce_sum(Xn, axis=0, keepdims=True)
 
-        if self.wiener_filter:
-            Xf = self.stft_finetune_op(y)  # (n_src, n_frames, n_freq, n_chan)
-            Xn = Xf[..., 0] * tf.math.conj(Xf[..., 0])
-            Xnc = tf.reduce_sum(Xn, axis=0, keepdims=True)
+                G = Xn / Xnc
 
-            G = Xn / Xnc
-
-            Y = G[..., None] * Xf
-            y = self.istft_finetune_op(Y)[
-                :, self.trim_begin // 2 : self.trim_begin // 2 + self.n_samples, :
-            ]
+                Y = G[..., None] * Xf
+                y = self.istft_finetune_op(Y)[
+                    :, self.trim_begin // 2 : self.trim_begin // 2 + self.n_samples, :
+                ]
 
         return y
 
@@ -332,6 +362,7 @@ class LehmerMeanDSF(DirectionalSparseFiltering):
             inline_decoupling=self.inline_decoupling,
             real_dtype=self.real_dtype,
             complex_dtype=self.complex_dtype,
+            use_real_proxies=self.use_real_proxies,
         )
 
 
@@ -380,4 +411,5 @@ class PowerMeanDSF(DirectionalSparseFiltering):
             inline_decoupling=self.inline_decoupling,
             real_dtype=self.real_dtype,
             complex_dtype=self.complex_dtype,
+            use_real_proxies=self.use_real_proxies,
         )
